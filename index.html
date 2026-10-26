@@ -107,7 +107,7 @@ kbd{font:700 12px var(--body);background:var(--ink);color:var(--cream);padding:3
   <div class="card">
     <h1 class="logo ol">Bandit<span>Spin <b>64</b></span></h1>
     <p class="tag ol">A spinning orange bandicoot crashes the castle grounds. Smash crates, eat fruit, collect all 16 Power Stars. The castle door leads to painting worlds and a final showdown.</p>
-    <button class="btn" id="bStart">Start</button>
+    <div class="row"><button class="btn" id="bContinue" hidden>Continue</button><button class="btn" id="bStart">Start</button></div>
     <div class="panel" id="ctlKeys">
       <h2>Controls</h2>
       <div class="keys">
@@ -148,6 +148,14 @@ kbd{font:700 12px var(--body);background:var(--ink);color:var(--cream);padding:3
   </div>
 </section>
 
+<section class="screen" id="sCrash" hidden>
+  <div class="card">
+    <h1 class="logo ol" style="font-size:clamp(40px,9vw,64px)">Graphics reset</h1>
+    <p class="tag ol">Your device ran out of graphics memory. Your stars are saved.</p>
+    <button class="btn" id="bReload">Reload and continue</button>
+  </div>
+</section>
+
 <section class="screen" id="sEnd" hidden>
   <div class="card">
     <h1 class="logo ol" id="endTitle">All 15 Stars!</h1>
@@ -171,8 +179,8 @@ const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in win
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 /* ---------- renderer ---------- */
-const renderer = new THREE.WebGLRenderer({ antialias: !isTouch || devicePixelRatio < 2, powerPreference: 'high-performance' });
-renderer.setPixelRatio(Math.min(devicePixelRatio || 1, isTouch ? 1.5 : 2));
+const renderer = new THREE.WebGLRenderer({ antialias: !isTouch, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio || 1, isTouch ? 1.25 : 2));
 renderer.setSize(innerWidth, innerHeight);
 $('game').appendChild(renderer.domElement);
 const canvas = renderer.domElement;
@@ -186,7 +194,7 @@ scene.add(new THREE.HemisphereLight(0xeaf7ff, 0x6b8a3a, 0.82));
 const sun = new THREE.DirectionalLight(0xfff0d0, 0.78); sun.position.set(40, 80, 30); scene.add(sun);
 
 const matCache = {};
-const M = c => matCache[c] || (matCache[c] = new THREE.MeshLambertMaterial({ color: c, flatShading: true }));
+const M = c => matCache[c] || (matCache[c] = new THREE.MeshLambertMaterial({ color: c }));
 const maxAniso = Math.min(4, renderer.capabilities.getMaxAnisotropy());
 function canvasTex(size, draw, rx = 1, ry = 1) {
   const c = document.createElement('canvas'); c.width = c.height = size;
@@ -579,6 +587,16 @@ function buildFinal() {
 }
 buildLobby(); buildLava(); buildIce(); buildClock(); buildFinal();
 const staticSolidCount = solids.length;
+scene.updateMatrixWorld(true);
+for (const o of scene.children) o.traverse(n => { n.matrixAutoUpdate = false; });
+const thaw = o => o && o.traverse(n => { n.matrixAutoUpdate = true; });
+for (const mv of world.movers) thaw(mv.c.mesh);
+for (const f of world.flames) thaw(f.pivot);
+for (const pt of world.portals) thaw(pt.g);
+for (const h of world.hands) thaw(h.pivot);
+for (const g of world.gears) thaw(g.g);
+for (const c of world.clouds) thaw(c);
+thaw(world.pond); thaw(world.finalSwirl);
 
 /* ---------- shared dynamic assets ---------- */
 const crateTex = (kind, label) => canvasTex(128, (g, s) => {
@@ -683,6 +701,11 @@ function buildCrab() {
 
 /* ---------- dynamic state ---------- */
 let dyn = new THREE.Group(); scene.add(dyn);
+const SAVE_KEY = 'bandit-spin-64-save';
+const got = new Set();
+function loadSave() { try { const v = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null'); return v && Array.isArray(v.stars) ? v : null; } catch (_) { return null; } }
+function save() { try { localStorage.setItem(SAVE_KEY, JSON.stringify({ stars: [...got], fruit: P.fruit, lives: Math.max(0, P.lives) })); } catch (_) {} }
+function clearSave() { try { localStorage.removeItem(SAVE_KEY); } catch (_) {} }
 let boss = null, fboss = null;
 let crates = [], fruits = [], enemies = [], stars = [], flyers = [], parts = [], fx = [];
 let cratesLeft = 0, crabsLeft = 0;
@@ -772,8 +795,10 @@ function spawnDynamic() {
   addCrate('bounce', -7, 0, 10);
 
   for (const [x, z] of [[10, 8], [-14, 22], [20, 30], [-24, -12], [14, -24], [50, -8]]) addCrab(x, z);
-  for (const d of STAR_DEFS) if (!d.hidden) addStar(d, d.pos);
-  boss = makeBoss(); fboss = makeMagmaw(); $('bossbar').hidden = true;
+  for (const d of STAR_DEFS) if (!d.hidden && !got.has(d.id)) addStar(d, d.pos);
+  boss = makeBoss(); fboss = makeMagmaw();
+  if (got.has('roof')) { dyn.remove(boss.m); boss.state = 'gone'; }
+  if (got.has('final')) { dyn.remove(fboss.g); fboss.state = 'gone'; } $('bossbar').hidden = true;
 
   // lobby
   for (const k in areaCrates) delete areaCrates[k];
@@ -905,8 +930,8 @@ function fillPause() {
   for (const d of STAR_DEFS) {
     const area = d.area || 'outside';
     if (area !== lastArea) { const h = document.createElement('li'); h.className = 'h'; h.textContent = AREA_LABEL[area]; ul.append(h); lastArea = area; }
-    const got = stars.some(s => s.def.id === d.id && s.collected);
-    const li = document.createElement('li'); if (got) li.className = 'got';
+    const gotIt = got.has(d.id);
+    const li = document.createElement('li'); if (gotIt) li.className = 'got';
     li.innerHTML = '<span class="s">★</span><div><b></b><span></span></div>';
     li.querySelector('b').textContent = d.name; li.querySelector('div span').textContent = d.hint;
     ul.append(li);
@@ -945,6 +970,7 @@ function addFruit(n) {
   hud();
 }
 function spawnHidden(id, pos) {
+  if (got.has(id)) return;
   const d = STAR_DEFS.find(s => s.id === id);
   addStar(d, pos || d.pos); sfx.appear(); banner('A Star appeared!', d.name, 2.4);
 }
@@ -1016,13 +1042,14 @@ function loseLife() {
   hud(); banner('Ouch!', `${P.lives} ${P.lives === 1 ? 'life' : 'lives'} left`, 1.8);
 }
 function gameOver() {
-  $('bKeep').hidden = true;
+  $('bKeep').hidden = true; gameOverEnd = true; P.lives = 4; save(); P.lives = -1;
+  $('bAgain').textContent = 'Continue';
   state = 'end'; $('endTitle').textContent = 'Game Over';
   $('endText').textContent = `You found ${P.stars} of ${TOTAL_STARS} stars and ate ${P.fruit} fruit.`;
   $('sEnd').hidden = false; $('touch').hidden = true;
 }
 function collectStar(st) {
-  st.collected = true; dyn.remove(st.m); P.stars++;
+  st.collected = true; dyn.remove(st.m); got.add(st.def.id); P.stars = got.size; save();
   burst(st.m.position, 0xffd400, 16, 7, 0.22, 1.1); flash(st.m.position, 0xfff4a0, 3, 0.5);
   sfx.star(); P.health = 3; P.invuln = Math.max(P.invuln, 1); hud();
   banner('Star Get!', `${st.def.name}  ·  ${P.stars} / ${TOTAL_STARS}`, 2.6);
@@ -1410,6 +1437,7 @@ function buildMagmaw() {
   deco(new THREE.ConeGeometry(0.32, 0.9, 7), fire, 0, 0.6, -4.4, body).rotation.x = -Math.PI / 2;
   return { g, body, head };
 }
+const fireGeo = new THREE.SphereGeometry(0.5, 10, 8), fireMat = new THREE.MeshBasicMaterial({ color: 0xffa21a });
 function makeMagmaw() {
   const parts = buildMagmaw(); parts.g.position.set(FINAL_X, 0, -6); dyn.add(parts.g);
   const bombs = [];
@@ -1491,7 +1519,7 @@ function updateMagmaw(dt) {
           const n = 3 + b.phase * 2;
           for (let k = 0; k < n; k++) {
             const a = b.face + (k - (n - 1) / 2) * (0.95 / Math.max(1, n - 1)) * 1.4;
-            const m = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffa21a }));
+            const m = new THREE.Mesh(fireGeo, fireMat);
             m.position.set(b.pos.x + Math.sin(b.face) * 2.6, 4, b.pos.z + Math.cos(b.face) * 2.6); dyn.add(m);
             b.fires.push({ m, vx: Math.sin(a) * 9, vz: Math.cos(a) * 9, life: 2.6 });
           }
@@ -1848,7 +1876,19 @@ function togglePause() {
   if (state === 'play') { state = 'pause'; fillPause(); $('sPause').hidden = false; $('touch').hidden = true; if (AC) AC.suspend(); }
   else if (state === 'pause') { state = 'play'; $('sPause').hidden = true; $('touch').hidden = !isTouch; initAudio(); }
 }
+let gameOverEnd = false;
+function continueGame() {
+  gameOverEnd = false; $('bAgain').textContent = 'Play again';
+  const sv = loadSave(); got.clear(); if (sv) sv.stars.forEach(id => got.add(id));
+  setEnv('outside'); warping = 0; warpTo = null; levelExitT = 0; $('fade').classList.remove('on');
+  spawnDynamic(); resetPlayer(true);
+  if (sv) { P.fruit = sv.fruit || 0; P.lives = sv.lives > 0 ? sv.lives : 4; }
+  P.stars = got.size; P.hundredDone = got.has('hundred'); hud();
+  $('sEnd').hidden = true; $('sPause').hidden = true; $('sTitle').hidden = true; start();
+}
 function restart() {
+  gameOverEnd = false; $('bAgain').textContent = 'Play again';
+  got.clear(); clearSave();
   setEnv('outside'); warping = 0; warpTo = null; levelExitT = 0; $('fade').classList.remove('on');
   spawnDynamic(); resetPlayer(true); hud();
   $('sEnd').hidden = true; $('sPause').hidden = true; start();
@@ -1858,7 +1898,15 @@ $('bPause').addEventListener('click', () => { if (state === 'play' || state === 
 $('bResume').addEventListener('click', togglePause);
 $('bRestart').addEventListener('click', restart);
 $('bLeave').addEventListener('click', () => { togglePause(); leaveArea(); });
-$('bAgain').addEventListener('click', restart);
+$('bAgain').addEventListener('click', () => gameOverEnd ? continueGame() : restart());
+$('bContinue').addEventListener('click', continueGame);
+$('bStart').addEventListener('click', () => { if (got.size) { got.clear(); clearSave(); spawnDynamic(); resetPlayer(true); hud(); } }, true);
+$('bReload').addEventListener('click', () => location.reload());
+canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); save(); state = 'pause'; $('touch').hidden = true; $('sCrash').hidden = false; }, false);
+{
+  const sv = loadSave();
+  if (sv && sv.stars.length) { $('bContinue').hidden = false; $('bContinue').textContent = `Continue  ★${sv.stars.length}`; $('bStart').textContent = 'New game'; $('bStart').classList.add('alt'); }
+}
 $('bKeep').addEventListener('click', () => { $('sEnd').hidden = true; state = 'play'; $('touch').hidden = !isTouch; warp('outside', [0, 0, -33], 0, 'Find the rest of the stars'); });
 $('bMute').addEventListener('click', () => {
   musicOn = !musicOn; $('bMute').setAttribute('aria-pressed', musicOn);
@@ -1885,6 +1933,7 @@ function frame(now) {
   for (const c of world.clouds) c.position.x += dt * 0.8, c.position.x > 160 && (c.position.x = -160);
   if (state === 'play') {
     playTime += dt;
+    if (Math.floor(playTime / 5) !== Math.floor((playTime - dt) / 5)) save();
     if (!warpTo) updatePlayer(dt);
     updateEntities(dt);
     checkTriggers(dt);
